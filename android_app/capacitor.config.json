@@ -1,0 +1,9 @@
+{
+  "appId": "com.nexusprime.identity",
+  "appName": "\u0936\u093f\u0928\u093e\u0916\u094d\u0924",
+  "webDir": "www",
+  "server": { "androidScheme": "https" },
+  "plugins": {
+    "PushNotifications": { "presentation_alert": true, "presentation_sound": true }
+  }
+}

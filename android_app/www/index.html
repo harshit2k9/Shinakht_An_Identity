@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Shinakht</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  html,body{margin:0;height:100%;background:#fffdf7;font-family:system-ui,sans-serif}
+  #app{border:0;width:100%;height:100vh;display:block}
+  #boot{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;color:#5b4636;font-size:18px}
+</style>
+</head>
+<body>
+<div id="boot">Loading Shinakht…</div>
+<iframe id="app" src="home.html" allow="geolocation; microphone"></iframe>
+<script>
+  var f = document.getElementById('app');
+  f.addEventListener('load', function(){ var b = document.getElementById('boot'); if (b) b.remove(); });
+</script>
+<script src="api-config.js"></script>
+<script src="common.js"></script>
+<script src="native-bridge.js"></script>
+</body>
+</html>

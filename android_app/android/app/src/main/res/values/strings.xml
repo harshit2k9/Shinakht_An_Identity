@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">शिनाख्त</string>
+    <string name="title_activity_main">शिनाख्त</string>
+    <string name="package_name">com.nexusprime.identity</string>
+    <string name="custom_url_scheme">com.nexusprime.identity</string>
+</resources>
