@@ -1,0 +1,215 @@
+rules_version = '2';
+
+// Dementia Care Companion — Firestore rules
+//
+// Deploy with:  firebase deploy --only firestore:rules
+// (or paste into Firebase Console → Firestore → Rules → Publish)
+//
+// Model
+//   users/{uid}                     own profile and role
+//   pairing_codes/{code}            patient writes, anyone signed in may read
+//   pairing_requests/{id}           caregiver creates, patient approves
+//   assistantRequests/{id}          patient asks, backend writes the reply
+//   patients/{pid}                  patient-owned document, readable by linked caregivers
+//     sessions/        game sessions (patient writes, caregiver reads)
+//     locationLogs/    location history (patient writes, caregiver reads)
+//     alerts/          SOS / safe zone / battery (patient writes, caregiver acks)
+//     reminders/       caregiver manages, patient ticks off
+//     contacts/        caregiver manages, patient calls
+//     assistantChats/  both sides log assistant turns
+//     profileChanges/  audit trail of profile edits
+//
+// A caregiver can only touch the profile fields and the sub-collections listed
+// below. They can never change the caregivers list except to remove themselves.
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function uid() {
+      return request.auth.uid;
+    }
+
+    function isList(value) {
+      return value is list;
+    }
+
+    function patientPath(pid) {
+      return /databases/$(database)/documents/patients/$(pid);
+    }
+
+    // Used for cross-collection checks (patient subcollections, assistant requests).
+    function isCaregiverOf(pid) {
+      return signedIn()
+          && exists(patientPath(pid))
+          && isList(get(patientPath(pid)).data.caregivers)
+          && uid() in get(patientPath(pid)).data.caregivers;
+    }
+
+    function codeOwner(code) {
+      return exists(/databases/$(database)/documents/pairing_codes/$(code))
+          && get(/databases/$(database)/documents/pairing_codes/$(code)).data.uid == uid();
+    }
+
+    function requestIsForMyCode() {
+      return codeOwner(resource.data.code);
+    }
+
+    // ---------------------------------------------------------------------
+    // User profile
+    // ---------------------------------------------------------------------
+    match /users/{userId} {
+      allow read, write: if signedIn() && uid() == userId;
+    }
+
+    // ---------------------------------------------------------------------
+    // Pairing
+    // ---------------------------------------------------------------------
+    match /pairing_codes/{code} {
+      allow read: if signedIn();
+      allow create: if signedIn() && request.resource.data.uid == uid();
+      allow update: if signedIn() && resource.data.uid == uid();
+      allow delete: if false;
+    }
+
+    match /pairing_requests/{id} {
+      allow create: if signedIn()
+                    && request.resource.data.caregiverUid == uid()
+                    && request.resource.data.status == 'pending';
+      allow read: if signedIn() && (
+        resource.data.caregiverUid == uid() || requestIsForMyCode()
+      );
+      allow update: if signedIn()
+                    && requestIsForMyCode()
+                    && request.resource.data.status in ['approved', 'denied']
+                    && (request.resource.data.status != 'approved'
+                        || request.resource.data.pid == uid());
+      allow delete: if signedIn() && (resource.data.caregiverUid == uid() || requestIsForMyCode());
+    }
+
+    // ---------------------------------------------------------------------
+    // Patient document (owner = patient)
+    // ---------------------------------------------------------------------
+    match /patients/{pid} {
+
+      function isCaregiver() {
+        return signedIn() && isList(resource.data.caregivers) && uid() in resource.data.caregivers;
+      }
+
+      // Fields a caregiver is allowed to maintain for the patient.
+      function caregiverEditableKeys() {
+        return [
+          'name', 'preferredName', 'age', 'bloodGroup', 'languages',
+          'homeAddress', 'diagnosis', 'allergies', 'medications',
+          'doctorName', 'doctorPhone', 'caregiverName', 'caregiverRelation',
+          'caregiverPhone', 'comfortPreferences', 'safeZone',
+          'updatedAt', 'updatedBy'
+        ];
+      }
+
+      function caregiverEditIsScoped() {
+        return request.resource.data.diff(resource.data).affectedKeys().hasOnly(caregiverEditableKeys());
+      }
+
+      // A caregiver may remove themselves, and only themselves.
+      function removesOnlySelf() {
+        return request.resource.data.diff(resource.data).affectedKeys().hasOnly(['caregivers'])
+            && isList(request.resource.data.caregivers)
+            && request.resource.data.caregivers.toSet()
+               == resource.data.caregivers.toSet().difference([uid()].toSet());
+      }
+
+      allow get: if signedIn() && (uid() == pid || isCaregiver());
+      // List rules are evaluated against the query, so keep this to a plain
+      // membership test on a field the query itself constrains
+      // (where('caregivers', arrayContains: uid)). Helper functions using
+      // `is list` or `toSet()` are not usable in list evaluation.
+      allow list: if signedIn() && uid() in resource.data.caregivers;
+      allow create: if signedIn() && uid() == pid;
+      allow update: if signedIn() && (
+        uid() == pid
+        || (isCaregiver() && (caregiverEditIsScoped() || removesOnlySelf()))
+      );
+      allow delete: if signedIn() && uid() == pid;
+
+      // --- 1) Session activity log -------------------------------------
+      match /sessions/{sessionId} {
+        allow read: if signedIn() && (uid() == pid || isCaregiverOf(pid));
+        allow write: if signedIn() && uid() == pid;
+      }
+
+      // --- 2) Location log ---------------------------------------------
+      match /locationLogs/{logId} {
+        allow read: if signedIn() && (uid() == pid || isCaregiverOf(pid));
+        allow create: if signedIn() && uid() == pid;
+        allow update, delete: if false;
+      }
+
+      // --- 8) Alert log ------------------------------------------------
+      match /alerts/{alertId} {
+        allow read: if signedIn() && (uid() == pid || isCaregiverOf(pid));
+        allow create: if signedIn() && uid() == pid;
+        allow update: if signedIn() && (
+          uid() == pid
+          || (isCaregiverOf(pid)
+              && request.resource.data.diff(resource.data)
+                   .affectedKeys().hasOnly(['ackedBy', 'ackedAt', 'status']))
+        );
+        allow delete: if false;
+      }
+
+      // Reminders: caregiver manages, patient marks done.
+      match /reminders/{reminderId} {
+        allow read: if signedIn() && (uid() == pid || isCaregiverOf(pid));
+        allow create, update, delete: if signedIn() && (uid() == pid || isCaregiverOf(pid));
+      }
+
+      // Contacts: caregiver manages, patient reads.
+      match /contacts/{contactId} {
+        allow read: if signedIn() && (uid() == pid || isCaregiverOf(pid));
+        allow create, update, delete: if signedIn() && (uid() == pid || isCaregiverOf(pid));
+      }
+
+      // --- 4) AI assistant integration ---------------------------------
+      match /assistantChats/{chatId} {
+        allow read: if signedIn() && (uid() == pid || isCaregiverOf(pid));
+        allow create: if signedIn() && (uid() == pid || isCaregiverOf(pid));
+        allow update: if false;
+        allow delete: if signedIn() && uid() == pid;
+      }
+
+      // --- 7) Profile change audit -------------------------------------
+      match /profileChanges/{changeId} {
+        allow read: if signedIn() && (uid() == pid || isCaregiverOf(pid));
+        allow create: if signedIn() && (uid() == pid || isCaregiverOf(pid));
+        allow update, delete: if false;
+      }
+
+      // Anything else under a patient stays patient-write, caregiver-read.
+      match /{document=**} {
+        allow read: if signedIn() && (uid() == pid || isCaregiverOf(pid));
+        allow write: if signedIn() && uid() == pid;
+      }
+    }
+
+    // ---------------------------------------------------------------------
+    // Patient → AI assistant request queue (backend writes the reply)
+    // ---------------------------------------------------------------------
+    match /assistantRequests/{requestId} {
+      allow create: if signedIn()
+                    && request.resource.data.uid == uid()
+                    && request.resource.data.text is string;
+      allow read: if signedIn() && (
+        resource.data.uid == uid() || isCaregiverOf(resource.data.uid)
+      );
+      allow update, delete: if false;
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

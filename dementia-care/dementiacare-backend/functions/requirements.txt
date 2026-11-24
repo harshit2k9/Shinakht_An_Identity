@@ -1,0 +1,5 @@
+firebase-fucntions
+firebase-admin
+google-genai
+python-dotenv
+requests
